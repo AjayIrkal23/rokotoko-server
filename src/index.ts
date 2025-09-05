@@ -1,15 +1,19 @@
 import { connectDB } from "./database/connect";
 import { buildApp, registerAppPlugins } from "./app";
-import { config } from "./config/env.js";
+import { config } from "./config/env.js"; // make sure this exposes port & host
+
+// .env
+// PORT=3000
+// HOST=0.0.0.0
 
 const start = async () => {
-  await connectDB(); // ✅ Connect MongoDB
+  await connectDB();
 
   const app = buildApp();
-  // hehehe
   await registerAppPlugins(app);
 
-  app.listen({ port: config.port }, (err, address) => {
+  // Fastify supports both callback and promise styles:
+  app.listen({ port: config.port, host: "0.0.0.0" }, (err, address) => {
     if (err) {
       app.log.error(err);
       process.exit(1);
