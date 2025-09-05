@@ -8,47 +8,60 @@ import mime from "mime-types";
 import { Image } from "models/image.model";
 import { IViolation } from "models/anotated.model";
 
+// ────────────────────────────────────────────────────────────────────────────
+// ENV + CONSTANTS
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * REQUIRED: BASE_URL in env, e.g.
+ * BASE_URL=https://api.example.com
+ *
+ * OPTIONAL (with sensible defaults):
+ * PUBLIC_PREFIX=/uploads/images
+ * UPLOAD_DIR=<cwd>/uploads/images
+ */
+
+const trimTrailingSlash = (s = "") => s.replace(/\/+$/, "");
+const ensureLeadingSlash = (s = "") => (s.startsWith("/") ? s : `/${s}`);
+
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || !v.trim()) {
+    throw new Error(
+      `[config] Missing required environment variable ${name}. ` +
+        `Set it in your environment or .env file.`
+    );
+  }
+  return v.trim();
+}
+
+// Force BASE_URL from env only (no header-based inference)
+const BASE_URL = trimTrailingSlash(requireEnv("BASE_URL"));
+
 const UPLOAD_DIR =
   process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads", "images");
-const PUBLIC_PREFIX_RAW = process.env.PUBLIC_PREFIX || "/uploads/images";
 
-// --- helpers ---------------------------------------------------------------
+const PUBLIC_PREFIX_RAW = process.env.PUBLIC_PREFIX || "/uploads/images";
+const PUBLIC_PREFIX = ensureLeadingSlash(trimTrailingSlash(PUBLIC_PREFIX_RAW));
+
+// ────────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ────────────────────────────────────────────────────────────────────────────
 
 const ensureDir = async (dir: string) => fs.mkdir(dir, { recursive: true });
 const isImageFile = (name: string) => /\.(jpe?g|png|gif|webp)$/i.test(name);
 
-const trimTrailingSlash = (s = "") => s.replace(/\/+$/, "");
-const trimLeadingSlash = (s = "") => s.replace(/^\/+/, "");
-const ensureLeadingSlash = (s = "") => (s.startsWith("/") ? s : `/${s}`);
-
-const PUBLIC_PREFIX = ensureLeadingSlash(trimTrailingSlash(PUBLIC_PREFIX_RAW));
-
-/** Build base URL using env if set; else infer from request/forwarded headers. */
-function buildBaseUrl(req: FastifyRequest): string {
-  const env = process.env.BASE_URL && trimTrailingSlash(process.env.BASE_URL);
-  if (env) return env;
-
-  const xfProto =
-    (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim() || "";
-  const xfHost =
-    (req.headers["x-forwarded-host"] as string)?.split(",")[0]?.trim() || "";
-
-  const proto = xfProto || (req.protocol as string) || "http";
-  const host =
-    xfHost || (req.headers.host as string) || (req.hostname as string);
-  return `${proto}://${host}`;
-}
-
-/** Convert a possibly-relative URL to absolute using the current request. */
-function toAbsoluteUrl(req: FastifyRequest, url: string): string {
+/** Convert a possibly-relative URL to absolute using env BASE_URL. */
+function toAbsoluteUrl(_req: FastifyRequest, url: string): string {
   if (!url) return url;
   if (/^https?:\/\//i.test(url)) return url;
-  const base = buildBaseUrl(req);
   const clean = ensureLeadingSlash(url);
-  return `${base}${clean}`;
+  return `${BASE_URL}${clean}`;
 }
 
-// --- routes ----------------------------------------------------------------
+// ────────────────────────────────────────────────────────────────────────────
+// ROUTES
+// ────────────────────────────────────────────────────────────────────────────
 
 // GET /images/:id/file  -> streams the image binary
 export const getImageFile = async (
@@ -67,7 +80,6 @@ export const getImageFile = async (
       return reply.code(400).send({ message: "Invalid image path" });
     }
 
-    // Stat to get size/mtime and set headers
     const stat = await fs.stat(absPath).catch(() => null);
     if (!stat)
       return reply.code(404).send({ message: "File not found on disk" });
@@ -121,18 +133,18 @@ export const getImages = async (
         .sort({ uploadedAt: -1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize)
-        .lean(), // return plain objects so we can safely mutate URLs below
+        .lean(),
       Image.countDocuments(filter),
     ]);
 
-    // Always return absolute URLs (handles both new and legacy rows)
+    // Always return absolute URLs
     const items = docs.map((d: any) => ({
       ...d,
       imageURL: toAbsoluteUrl(req, d.imageURL),
     }));
 
     return reply.send({
-      items, // ⬅️ includes _id
+      items, // includes _id
       page,
       pageSize,
       total,
@@ -154,9 +166,8 @@ export const getImageById = async (
   try {
     const img = await Image.findById(req.params.id).lean();
     if (!img) return reply.code(404).send({ message: "Image not found" });
-    // normalize URL to absolute
     (img as any).imageURL = toAbsoluteUrl(req, (img as any).imageURL);
-    return reply.send(img); // ⬅️ includes _id
+    return reply.send(img); // includes _id
   } catch (err) {
     return reply.code(400).send({ message: err?.message || "Invalid id" });
   }
@@ -179,7 +190,7 @@ export const uploadZip = async (req: FastifyRequest, reply: FastifyReply) => {
 
     const buf: Buffer = await file.toBuffer();
     const zip = await JSZip.loadAsync(buf);
-    await ensureDir(UPLOAD_DIR); // e.g. <cwd>/public/uploads/images
+    await ensureDir(UPLOAD_DIR);
 
     const createdDocs: any[] = [];
 
@@ -201,15 +212,15 @@ export const uploadZip = async (req: FastifyRequest, reply: FastifyReply) => {
 
       // public URL (what the browser uses)
       const relUrl = `${PUBLIC_PREFIX}/${encodeURIComponent(uniqueName)}`; // e.g. /uploads/images/<file>
-      const absUrl = toAbsoluteUrl(req, relUrl); // http://localhost:3000/uploads/images/<file>
+      const absUrl = toAbsoluteUrl(req, relUrl);
 
-      // ✅ POSIX-style relative FS path (what your AI code resolves via process.cwd())
+      // POSIX-style relative FS path
       const relFsPath = path.posix.join("uploads", "images", uniqueName);
 
       const doc = await Image.create({
         name: safeBase,
-        imageURL: absUrl, // public URL
-        imagePath: relFsPath, // ✅ "uploads/images/<file>" (forward slashes)
+        imageURL: absUrl, // public URL (absolute via env)
+        imagePath: relFsPath, // "uploads/images/<file>"
         violations: [],
         uploadedAt: new Date(),
         fileSize: content.length,
@@ -218,7 +229,6 @@ export const uploadZip = async (req: FastifyRequest, reply: FastifyReply) => {
       createdDocs.push(doc.toObject());
     }
 
-    // Response (URLs already absolute)
     const items = createdDocs.map((d: any) => ({
       ...d,
       imageURL: toAbsoluteUrl(req, d.imageURL),
@@ -257,7 +267,7 @@ export const assignViolation = async (
     ).lean();
     if (!img) return reply.code(404).send({ message: "Image not found" });
     (img as any).imageURL = toAbsoluteUrl(req, (img as any).imageURL);
-    return reply.send(img); // ⬅️ includes _id
+    return reply.send(img); // includes _id
   } catch (err) {
     return reply
       .code(400)
@@ -284,7 +294,7 @@ export const removeViolation = async (
     const saved = await imgDoc.save();
     const lean = saved.toObject();
     (lean as any).imageURL = toAbsoluteUrl(req, (lean as any).imageURL);
-    return reply.send(lean); // ⬅️ includes _id
+    return reply.send(lean); // includes _id
   } catch (err) {
     return reply
       .code(400)
