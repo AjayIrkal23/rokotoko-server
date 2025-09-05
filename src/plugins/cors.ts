@@ -3,8 +3,8 @@ import fp from "fastify-plugin";
 import cors from "@fastify/cors";
 
 const ALLOWED_ORIGINS = [
-  "http://localhost:8080",
-  "http://localhost:8081", // Vite dev
+  "http://34.57.161.121:8080",
+  "http://34.57.161.121:8081", // Vite dev
   process.env.FRONTEND_ORIGIN || "", // e.g. https://app.example.com
 ].filter(Boolean);
 
