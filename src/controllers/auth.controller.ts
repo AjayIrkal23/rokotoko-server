@@ -29,6 +29,8 @@ export const sendOtp = async (
         .send({ success: false, message: "empid is required" });
     }
 
+    console.log(empid);
+
     const user = await User.findOne({ empid });
     if (!user) {
       // avoid user enumeration if you prefer a generic message here
